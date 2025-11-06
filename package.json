@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "generate:tokens": "node ./scripts/generateTokens.mjs --count=100",
-    "cf:build": "npx @cloudflare/next-on-pages build",
+    "cf:build": "npx @cloudflare/next-on-pages",
     "cf:preview": "npx wrangler pages dev .vercel/output/static --compatibility-date=2024-11-06",
     "cf:deploy": "npx wrangler pages deploy .vercel/output/static"
   },
