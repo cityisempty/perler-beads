@@ -6,7 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "generate:tokens": "node ./scripts/generateTokens.mjs --count=100",
+    "cf:build": "npx @cloudflare/next-on-pages build",
+    "cf:preview": "npx wrangler pages dev .vercel/output/static --compatibility-date=2024-11-06",
+    "cf:deploy": "npx wrangler pages deploy .vercel/output/static"
   },
   "dependencies": {
     "@vercel/analytics": "^1.5.0",
@@ -21,10 +25,12 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@cloudflare/next-on-pages": "^1.11.0",
     "eslint": "^9",
     "eslint-config-next": "15.3.1",
     "sharp": "^0.34.2",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "wrangler": "^3.102.0"
   }
 }

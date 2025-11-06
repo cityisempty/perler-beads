@@ -1,0 +1,8 @@
+name = "perlercraft"
+pages_build_output_dir = ".vercel/output/static"
+compatibility_date = "2024-11-06"
+
+# Define any Pages Functions settings here if needed in future.
+
+[env.preview]
+# Placeholder for preview-specific vars.

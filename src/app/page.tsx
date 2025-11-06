@@ -20,6 +20,7 @@ import {
 import { GridDownloadOptions } from '../types/downloadTypes';
 import DownloadSettingsModal, { gridLineColorOptions } from '../components/DownloadSettingsModal';
 import { downloadImage, importCsvData } from '../utils/imageDownloader';
+import tokenHashes from '../data/tokenHashes';
 
 import { 
   colorSystemOptions, 
@@ -41,6 +42,16 @@ const floatAnimation = `
     animation: float 3s ease-in-out infinite;
   }
 `;
+
+const MAX_TOKEN_USES = 10;
+const ACTIVE_TOKEN_KEY = 'perlercraft:activeCodeHash';
+const USAGE_STORAGE_PREFIX = 'perlercraft:tokenUsage:';
+const IS_TOKEN_GATING_ENABLED = tokenHashes.length > 0;
+const SHOW_INSTALL_PROMPT = false;
+const SHOW_FLOATING_TOOLBAR = false;
+
+const getUsageStorageKey = (tokenHash: string) =>
+  `${USAGE_STORAGE_PREFIX}${tokenHash}`;
 
 // Helper function for sorting color keys - 保留原有实现，因为未在utils中导出
 function sortColorKeys(a: string, b: string): number {
@@ -93,8 +104,6 @@ import MagnifierSelectionOverlay from '../components/MagnifierSelectionOverlay';
 import { loadPaletteSelections, savePaletteSelections, presetToSelections, PaletteSelections } from '../utils/localStorageUtils';
 import { TRANSPARENT_KEY, transparentColorData } from '../utils/pixelEditingUtils';
 
-// 1. 导入新的 DonationModal 组件
-import DonationModal from '../components/DonationModal';
 import FocusModePreDownloadModal from '../components/FocusModePreDownloadModal';
 
 export default function Home() {
@@ -127,8 +136,6 @@ export default function Home() {
   const [selectedColor, setSelectedColor] = useState<MappedPixel | null>(null);
   // 新增：一键擦除模式状态
   const [isEraseMode, setIsEraseMode] = useState<boolean>(false);
-  // 新增状态变量：控制打赏弹窗
-  const [isDonationModalOpen, setIsDonationModalOpen] = useState<boolean>(false);
   const [customPaletteSelections, setCustomPaletteSelections] = useState<PaletteSelections>({});
   const [isCustomPaletteEditorOpen, setIsCustomPaletteEditorOpen] = useState<boolean>(false);
   const [isCustomPalette, setIsCustomPalette] = useState<boolean>(false);
@@ -181,6 +188,25 @@ export default function Home() {
   // 新增：专心拼豆模式进入前下载提醒弹窗
   const [isFocusModePreDownloadModalOpen, setIsFocusModePreDownloadModalOpen] = useState<boolean>(false);
 
+  // 下载授权码状态
+  const tokenHashSet = useMemo(() => new Set(tokenHashes.map((hash) => hash.toLowerCase())), []);
+
+  const [accessControl, setAccessControl] = useState<{
+    codeHash: string | null;
+    usageCount: number;
+    maxUses: number;
+  }>({
+    codeHash: null,
+    usageCount: 0,
+    maxUses: MAX_TOKEN_USES
+  });
+  const [tokenError, setTokenError] = useState<string | null>(null);
+  const remainingUses = Math.max(0, accessControl.maxUses - accessControl.usageCount);
+  const isTokenActive = Boolean(accessControl.codeHash);
+  const maskedToken = accessControl.codeHash
+    ? `${accessControl.codeHash.slice(0, 6)}...${accessControl.codeHash.slice(-6)}`
+    : '';
+
   // 放大镜切换处理函数
   const handleToggleMagnifier = () => {
     const newActiveState = !isMagnifierActive;
@@ -200,6 +226,71 @@ export default function Home() {
   const handleActivateMagnifier = () => {
     setActiveFloatingTool('magnifier');
   };
+
+  const clearActiveToken = useCallback(() => {
+    setAccessControl((prev) => ({
+      codeHash: null,
+      usageCount: 0,
+      maxUses: prev.maxUses,
+    }));
+    setTokenError(null);
+    if (typeof window !== 'undefined') {
+      window.localStorage.removeItem(ACTIVE_TOKEN_KEY);
+    }
+  }, []);
+
+  const activateCodeHash = useCallback(
+    (
+      rawCodeHash: string,
+      options: { persist?: boolean; showFeedback?: boolean } = {}
+    ): boolean => {
+      const { persist = true, showFeedback = true } = options;
+
+      if (!IS_TOKEN_GATING_ENABLED) {
+        setTokenError('尚未配置授权码批次，请先导入授权哈希。');
+        return false;
+      }
+
+      const normalized = rawCodeHash.trim().toLowerCase();
+      const isSha256String = /^[a-f0-9]{64}$/.test(normalized);
+
+      if (!isSha256String || !tokenHashSet.has(normalized)) {
+        if (showFeedback) {
+          alert('授权码无效或已停用，请与客服联系。');
+          setTokenError('授权码无效或已停用，请与客服联系。');
+        }
+        return false;
+      }
+
+      let usageCount = 0;
+      if (typeof window !== 'undefined') {
+        const storedUsage = window.localStorage.getItem(
+          getUsageStorageKey(normalized)
+        );
+        if (storedUsage) {
+          const parsed = Number(storedUsage);
+          usageCount = Number.isFinite(parsed)
+            ? Math.min(MAX_TOKEN_USES, Math.max(0, parsed))
+            : 0;
+        }
+        if (persist) {
+          window.localStorage.setItem(ACTIVE_TOKEN_KEY, normalized);
+        }
+      }
+
+      setAccessControl({
+        codeHash: normalized,
+        usageCount,
+        maxUses: MAX_TOKEN_USES,
+      });
+      setTokenError(null);
+      if (showFeedback) {
+        alert('授权已激活，可下载图纸。');
+      }
+      return true;
+    },
+    [tokenHashSet]
+  );
 
   // 放大镜像素编辑处理函数
   const handleMagnifierPixelEdit = (row: number, col: number, colorData: { key: string; color: string }) => {
@@ -1004,68 +1095,106 @@ export default function Home() {
     return () => clearTimeout(timer);
   }, []);
 
+  // 恢复上次使用的授权码
+  useEffect(() => {
+    if (!IS_TOKEN_GATING_ENABLED || typeof window === 'undefined') {
+      return;
+    }
+
+    const storedCodeHash = window.localStorage.getItem(ACTIVE_TOKEN_KEY);
+    if (storedCodeHash) {
+      const restored = activateCodeHash(storedCodeHash, {
+        persist: true,
+        showFeedback: false,
+      });
+      if (!restored) {
+        window.localStorage.removeItem(ACTIVE_TOKEN_KEY);
+      }
+    }
+  }, [activateCodeHash]);
+
+  // 处理链接中的授权码参数
+  useEffect(() => {
+    if (!IS_TOKEN_GATING_ENABLED || typeof window === 'undefined') {
+      return;
+    }
+
+    const url = new URL(window.location.href);
+    const codeParam = url.searchParams.get('code');
+    if (!codeParam) {
+      return;
+    }
+
+    const activated = activateCodeHash(codeParam, {
+      persist: true,
+      showFeedback: false,
+    });
+
+    if (activated) {
+      url.searchParams.delete('code');
+      window.history.replaceState(null, '', url.toString());
+      alert('授权已激活，可下载图纸。');
+    }
+  }, [activateCodeHash]);
+
   // 设置组件挂载状态
   useEffect(() => {
     setIsMounted(true);
   }, []);
 
-  // 添加URL重定向检查
-  useEffect(() => {
-    // 检查是否在浏览器环境中
-    if (typeof window !== 'undefined') {
-      const currentUrl = window.location.href;
-      const currentHostname = window.location.hostname;
-      const targetDomain = 'https://perlerbeads.zippland.com/';
-      
-      // 排除localhost和127.0.0.1等本地开发环境
-      const isLocalhost = currentHostname === 'localhost' || 
-                         currentHostname === '127.0.0.1' || 
-                         currentHostname.startsWith('192.168.') ||
-                         currentHostname.startsWith('10.') ||
-                         currentHostname.endsWith('.local');
-      
-      // 检查当前URL是否不是目标域名，且不是本地开发环境
-      if (!currentUrl.startsWith(targetDomain) && !isLocalhost) {
-        console.log(`当前URL: ${currentUrl}`);
-        console.log(`目标URL: ${targetDomain}`);
-        console.log('正在重定向到官方域名...');
-        
-        // 保留当前路径和查询参数
-        const currentPath = window.location.pathname;
-        const currentSearch = window.location.search;
-        const currentHash = window.location.hash;
-        
-        // 构建完整的目标URL
-        let redirectUrl = targetDomain;
-        
-        // 如果不是根路径，添加路径
-        if (currentPath && currentPath !== '/') {
-          redirectUrl = redirectUrl.replace(/\/$/, '') + currentPath;
-        }
-        
-        // 添加查询参数和哈希
-        redirectUrl += currentSearch + currentHash;
-        
-        // 执行重定向
-        window.location.replace(redirectUrl);
-      } else if (isLocalhost) {
-        console.log(`检测到本地开发环境 (${currentHostname})，跳过重定向`);
-      }
-    }
-  }, []); // 只在组件首次挂载时执行
-
     // --- Download function (ensure filename includes palette) ---
-    const handleDownloadRequest = (options?: GridDownloadOptions) => {
-        // 调用移动到utils/imageDownloader.ts中的downloadImage函数
-        downloadImage({
-          mappedPixelData,
-          gridDimensions,
-          colorCounts,
-          totalBeadCount,
-          options: options || downloadOptions,
-          activeBeadPalette,
-          selectedColorSystem
-        });
+    const handleDownloadRequest = async (options?: GridDownloadOptions) => {
+        if (IS_TOKEN_GATING_ENABLED) {
+          if (!isTokenActive) {
+            setTokenError('请通过授权链接访问后再下载图纸。');
+            alert('请通过授权链接访问后再下载图纸。');
+            return;
+          }
+          if (remainingUses <= 0) {
+            setTokenError('该授权码已用完下载次数，请联系管理员续费。');
+            alert('该授权码已用完下载次数，请联系管理员续费。');
+            return;
+          }
+          setTokenError(null);
+        }
+
+        try {
+          await downloadImage({
+            mappedPixelData,
+            gridDimensions,
+            colorCounts,
+            totalBeadCount,
+            options: options || downloadOptions,
+            activeBeadPalette,
+            selectedColorSystem
+          });
+
+          if (IS_TOKEN_GATING_ENABLED) {
+            let updatedRemaining = remainingUses;
+            setAccessControl((prev) => {
+              if (!prev.codeHash) {
+                return prev;
+              }
+              const newUsage = Math.min(prev.maxUses, prev.usageCount + 1);
+              if (typeof window !== 'undefined') {
+                window.localStorage.setItem(
+                  getUsageStorageKey(prev.codeHash),
+                  String(newUsage)
+                );
+              }
+              updatedRemaining = Math.max(0, prev.maxUses - newUsage);
+              return {
+                ...prev,
+                usageCount: newUsage,
+              };
+            });
+            if (updatedRemaining >= 0) {
+              setTokenError(null);
+            }
+          }
+        } catch (error) {
+          console.error('下载图纸失败:', error);
+        }
     };
 
     // --- Handler to toggle color exclusion ---
@@ -1751,7 +1880,7 @@ export default function Home() {
     <style dangerouslySetInnerHTML={{ __html: floatAnimation }} />
     
     {/* PWA 安装按钮 */}
-    <InstallPWA />
+    {SHOW_INSTALL_PROMPT && <InstallPWA />}
     
     {/* ++ 修改：添加 onLoad 回调函数 ++ */}
     <Script
@@ -1864,10 +1993,10 @@ export default function Home() {
 
             {/* Ultra fancy brand name and tool name with hyper cute decorations */}
             <div className="relative flex flex-col items-center space-y-3">
-              {/* Brand name - 七卡瓦 with ultra fancy effects */}
+              {/* Brand name - PerlerCraft with ultra fancy effects */}
               <div className="relative">
                 <h1 className="relative text-4xl sm:text-6xl font-black text-transparent bg-clip-text bg-gradient-to-r from-pink-500 via-purple-500 via-blue-500 to-cyan-400 tracking-wider drop-shadow-2xl transform hover:scale-105 transition-transform duration-300 animate-bounce">
-                  七卡瓦
+                  PerlerCraft
                 </h1>
                 
                 {/* Super fancy geometric decorations */}
@@ -1939,55 +2068,11 @@ export default function Home() {
           </div>
           {/* Separator gradient remains the same */}
           <div className="h-1 w-24 mx-auto my-3 bg-gradient-to-r from-blue-500 to-pink-500 rounded-full"></div>
-                    {/* Slogan with clean typography */}
+          {/* Slogan with clean typography */}
           <p className="mt-4 text-base sm:text-lg font-light text-gray-600 dark:text-gray-300 max-w-lg mx-auto text-center tracking-[0.1em] leading-relaxed">
             让像素创意属于每一个人
           </p>
-          
-          {/* 添加小红书交流群链接 */}
-          <div className="mt-6 flex flex-col items-center justify-center space-y-2">
-            <p className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-amber-200 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 text-xs text-gray-600 dark:text-gray-200 font-semibold">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5 text-amber-500 dark:text-amber-300">
-                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm.707-11.707a1 1 0 00-1.414 0l-3 3a1 1 0 101.414 1.414L9 9.414V13a1 1 0 102 0V9.414l1.293 1.293a1 1 0 001.414-1.414l-3-3z" clipRule="evenodd" />
-              </svg>
-              发布平台请标注来源或保留图片水印及标识
-            </p>
-            <div className="flex items-center gap-1 text-xs text-gray-600 dark:text-gray-300">
-              <span>欢迎到</span>
-              <a href="https://www.xiaohongshu.com/user/profile/623e8b080000000010007721" target="_blank" rel="noopener noreferrer" className="inline-flex items-center text-rose-500 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 transition-colors duration-200 hover:underline font-medium">
-                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 1024 1024" fill="currentColor" className="mr-0.5">
-                  <path d="M512 64C264.6 64 64 264.6 64 512s200.6 448 448 448 448-200.6 448-448S759.4 64 512 64z m238.8 360.2l-57.7 93.3c-10.1 16.3-31.5 21.3-47.8 11.2l-112.4-69.5c-16.3-10.1-21.3-31.5-11.2-47.8l57.7-93.3c10.1-16.3 31.5-21.3 47.8-11.2l112.4 69.5c16.3 10.1 21.3 31.5 11.2 47.8zM448 496l-57.7 93.3c-10.1 16.3-31.5 21.3-47.8 11.2l-112.4-69.5c-16.3-10.1-21.3-31.5-11.2-47.8l57.7-93.3c10.1-16.3 31.5-21.3 47.8-11.2l112.4 69.5c16.3 10.1 21.3 31.5 11.2 47.8z m248.9 43.2l-57.7 93.3c-10.1 16.3-31.5 21.3-47.8 11.2l-112.4-69.5c-16.3-10.1-21.3-31.5-11.2-47.8l57.7-93.3c10.1-16.3 31.5-21.3 47.8-11.2l112.4 69.5c16.3 10.1 21.3 31.5 11.2 47.8z"/>
-                </svg>
-                小红书
-              </a>
-              <span>提建议和围观微信小程序开发进度</span>
-            </div>
-            <div className="flex items-center gap-1 text-xs text-gray-600 dark:text-gray-300">
-              <span>也欢迎到</span>
-              <a
-                href="https://github.com/Zippland/perler-beads"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 transition-colors duration-200 hover:underline font-medium"
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="currentColor"
-                  className="mr-0.5"
-                >
-                  <path
-                    fillRule="evenodd"
-                    d="M12 0C5.37 0 0 5.48 0 12.25c0 5.42 3.44 10.01 8.2 11.63.6.12.82-.27.82-.6 0-.3-.01-1.08-.02-2.13-3.34.74-4.04-1.65-4.04-1.65-.55-1.44-1.35-1.83-1.35-1.83-1.1-.78.08-.77.08-.77 1.21.09 1.85 1.26 1.85 1.26 1.08 1.9 2.83 1.35 3.52 1.03.11-.81.42-1.35.77-1.66-2.66-.31-5.46-1.36-5.46-6.06 0-1.34.46-2.43 1.22-3.29-.12-.31-.53-1.55.12-3.23 0 0 1-.33 3.29 1.25a10.96 10.96 0 0 1 5.98 0c2.29-1.58 3.29-1.25 3.29-1.25.65 1.68.24 2.92.12 3.23.76.86 1.22 1.95 1.22 3.29 0 4.71-2.81 5.74-5.49 6.05.43.38.81 1.13.81 2.28 0 1.65-.02 2.98-.02 3.39 0 .33.22.72.83.59C20.56 22.25 24 17.67 24 12.25 24 5.48 18.63 0 12 0Z"
-                  />
-                </svg>
-                GitHub
-              </a>
-              <span>给项目点个🌟 支持一下</span>
-            </div>
-          </div>
+
         </div>
       </header>
 
@@ -2429,26 +2514,28 @@ export default function Home() {
       </main>
 
       {/* 悬浮工具栏 */}
-      <FloatingToolbar
-        isManualColoringMode={isManualColoringMode}
-        isPaletteOpen={isFloatingPaletteOpen}
-        onTogglePalette={() => setIsFloatingPaletteOpen(!isFloatingPaletteOpen)}
-        onExitManualMode={() => {
-          setIsManualColoringMode(false);
-          setSelectedColor(null);
-          setTooltipData(null);
-          setIsEraseMode(false);
-          setColorReplaceState({
-            isActive: false,
-            step: 'select-source'
-          });
-          setHighlightColorKey(null);
-          setIsMagnifierActive(false);
-          setMagnifierSelectionArea(null);
-        }}
-        onToggleMagnifier={handleToggleMagnifier}
-        isMagnifierActive={isMagnifierActive}
-      />
+      {SHOW_FLOATING_TOOLBAR && (
+        <FloatingToolbar
+          isManualColoringMode={isManualColoringMode}
+          isPaletteOpen={isFloatingPaletteOpen}
+          onTogglePalette={() => setIsFloatingPaletteOpen(!isFloatingPaletteOpen)}
+          onExitManualMode={() => {
+            setIsManualColoringMode(false);
+            setSelectedColor(null);
+            setTooltipData(null);
+            setIsEraseMode(false);
+            setColorReplaceState({
+              isActive: false,
+              step: 'select-source'
+            });
+            setHighlightColorKey(null);
+            setIsMagnifierActive(false);
+            setMagnifierSelectionArea(null);
+          }}
+          onToggleMagnifier={handleToggleMagnifier}
+          isMagnifierActive={isMagnifierActive}
+        />
+      )}
 
       {/* 悬浮调色盘 */}
       {isManualColoringMode && (
@@ -2504,33 +2591,43 @@ export default function Home() {
       )}
 
       {/* Apply dark mode styles to the Footer */}
-      <footer className="w-full md:max-w-4xl mt-10 mb-6 py-6 text-center text-xs sm:text-sm text-gray-500 dark:text-gray-400 border-t border-gray-200 dark:border-gray-700 bg-gradient-to-b from-white to-gray-50 dark:from-gray-900 dark:to-gray-800/50 rounded-lg shadow-inner">
-
-        {/* Donation button styles are likely fine */}
-        <button
-          onClick={() => setIsDonationModalOpen(true)}
-          className="mb-5 px-6 py-2.5 bg-gradient-to-r from-pink-500 to-rose-500 text-white rounded-full shadow-lg transition-all duration-300 hover:shadow-xl hover:translate-y-[-2px] flex items-center justify-center mx-auto"
-        >
-          {/* SVG and Text inside button */}
-          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M18 8h1a2 2 0 0 1 2 2v1c0 1.1-.9 2-2 2h-1" fill="#f9a8d4" />
-            <path d="M6 8h12v9a3 3 0 0 1-3 3H9a3 3 0 0 1-3-3V8z" fill="#f9a8d4" />
-            <path d="M6 8V7a3 3 0 0 1 3-3h6a3 3 0 0 1 3 3v1" fill="#f472b6" />
-            <path d="M12 16v-4" stroke="#7d2a5a" />
-            <path d="M9.5 14.5L9 16" stroke="#7d2a5a" />
-            <path d="M14.5 14.5L15 16" stroke="#7d2a5a" />
-          </svg>
-          <span>请作者喝一杯奶茶</span>
-        </button>
-
-        {/* Copyright text color */}
-        <p className="font-medium text-gray-600 dark:text-gray-300">
-          七卡瓦 拼豆底稿生成器 &copy; {new Date().getFullYear()}
-        </p>
+      <footer className="w-full md:max-w-4xl mt-10 mb-6 py-6 text-xs sm:text-sm text-gray-500 dark:text-gray-400 border-t border-gray-200 dark:border-gray-700 bg-gradient-to-b from-white to-gray-50 dark:from-gray-900 dark:to-gray-800/50 rounded-lg shadow-inner">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <p className="font-medium text-gray-600 dark:text-gray-300">
+            PerlerCraft Studio &copy; {new Date().getFullYear()}
+          </p>
+          {IS_TOKEN_GATING_ENABLED && (
+            <div className="flex items-center gap-3 text-xs sm:text-sm text-gray-600 dark:text-gray-300">
+              {isTokenActive ? (
+                <>
+                  <span className="font-mono text-blue-600 dark:text-blue-300">
+                    {maskedToken}
+                  </span>
+                  <span className="text-emerald-600 dark:text-emerald-400 font-semibold">
+                    剩余 {remainingUses} / {accessControl.maxUses} 次
+                  </span>
+                  <button
+                    type="button"
+                    onClick={clearActiveToken}
+                    className="inline-flex items-center rounded border border-gray-300 dark:border-gray-600 px-2 py-1 text-xs text-gray-600 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                  >
+                    清除授权
+                  </button>
+                </>
+              ) : (
+                <span className="text-rose-500 dark:text-rose-400">
+                  未检测到授权，请使用专用链接访问。
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+        {tokenError && (
+          <p className="mt-2 text-xs text-rose-500 dark:text-rose-400">
+            {tokenError}
+          </p>
+        )}
       </footer>
-
-      {/* Donation Modal - 现在使用新的组件 */}
-      <DonationModal isOpen={isDonationModalOpen} onClose={() => setIsDonationModalOpen(false)} />
 
       {/* 使用导入的下载设置弹窗组件 */}
       <DownloadSettingsModal 
