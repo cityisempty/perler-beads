@@ -753,15 +753,48 @@ export async function downloadImage({
 
         if (previewWin && !previewWin.closed) {
           try {
-            previewWin.location.href = url;
+            // 直接在预览窗口中写入一个小型 HTML 文档，包含 <img>，提高 Android 浏览器兼容性
+            const doc = previewWin.document;
+            const html = `<!doctype html><meta charset="utf-8"><title>PerlerCraft 预览</title>
+              <style>html,body{height:100%;margin:0;font-family:system-ui,-apple-system,sans-serif;background:#fff} .wrap{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;padding:20px;box-sizing:border-box} img{max-width:100%;height:auto;box-shadow:0 4px 18px rgba(0,0,0,0.08)} p{color:#666;margin-top:10px;font-size:14px} a.download{display:inline-block;margin-top:8px;color:#1d4ed8;text-decoration:none}</style>
+              <div class="wrap">
+                <img src="${url}" alt="PerlerCraft 图纸" />
+                <p>提示：长按图片保存到本地或照片库</p>
+                <a class="download" href="${url}" download="bead-grid-${N}x${M}-${selectedColorSystem}.png">如果无法长按，请点击此处下载</a>
+              </div>`;
+
+            doc.open();
+            doc.write(html);
+            doc.close();
           } catch (assignErr) {
-            // 某些浏览器/标签页策略可能在跨域时阻止 location.assign，作为兜底，直接打开新标签
-            console.warn('无法在预览窗口中设置 URL，尝试在新窗口打开：', assignErr);
+            // 写入失败时作为兜底，尝试在新窗口打开 ObjectURL
+            console.warn('无法在预览窗口中写入 HTML，尝试在新窗口打开：', assignErr);
             window.open(url, '_blank');
           }
         } else {
-          // 预览窗口不可用，直接打开图片
-          window.open(url, '_blank');
+          // 预览窗口不可用，尝试打开一个新窗口并写入同样的 HTML 内容
+          const w = window.open('', '_blank');
+          if (w && w.document) {
+            try {
+              const doc = w.document;
+              const html = `<!doctype html><meta charset="utf-8"><title>PerlerCraft 预览</title>
+                <style>html,body{height:100%;margin:0;font-family:system-ui,-apple-system,sans-serif;background:#fff} .wrap{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;padding:20px;box-sizing:border-box} img{max-width:100%;height:auto;box-shadow:0 4px 18px rgba(0,0,0,0.08)} p{color:#666;margin-top:10px;font-size:14px} a.download{display:inline-block;margin-top:8px;color:#1d4ed8;text-decoration:none}</style>
+                <div class="wrap">
+                  <img src="${url}" alt="PerlerCraft 图纸" />
+                  <p>提示：长按图片保存到本地或照片库</p>
+                  <a class="download" href="${url}" download="bead-grid-${N}x${M}-${selectedColorSystem}.png">如果无法长按，请点击此处下载</a>
+                </div>`;
+
+              doc.open();
+              doc.write(html);
+              doc.close();
+            } catch (err) {
+              console.warn('在新窗口写入 HTML 失败，回退到直接打开 URL：', err);
+              window.open(url, '_blank');
+            }
+          } else {
+            window.open(url, '_blank');
+          }
         }
 
         // 在一段时间后释放对象 URL
