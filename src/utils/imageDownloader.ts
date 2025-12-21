@@ -707,25 +707,13 @@ export async function downloadImage({
 
     try {
       const dataURL = downloadCanvas.toDataURL('image/png');
-      const link = document.createElement('a');
-      link.download = `bead-grid-${N}x${M}-keys-palette_${selectedColorSystem}.png`; // 文件名包含色彩系统
-      link.href = dataURL;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      console.log("Grid image download initiated.");
-      
-      // 如果启用了CSV导出，同时导出CSV文件
-      if (options.exportCsv) {
-        exportCsvData({
-          mappedPixelData,
-          gridDimensions,
-          selectedColorSystem
-        });
-      }
+      // 在新窗口中打开图片，而不是直接下载
+      // 用户可以长按保存图片到自己想要的位置
+      window.open(dataURL, '_blank');
+      console.log("Grid image opened in browser.");
     } catch (e) {
-      console.error("下载图纸失败:", e);
-      alert("无法生成图纸下载链接。");
+      console.error("打开图纸失败:", e);
+      alert("无法生成图纸。");
     }
   };
   

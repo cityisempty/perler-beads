@@ -147,8 +147,7 @@ export default function Home() {
     gridInterval: 10,
     showCoordinates: true,
     gridLineColor: gridLineColorOptions[0].value,
-    includeStats: true, // 默认包含统计信息
-    exportCsv: false // 默认不导出CSV
+    includeStats: true // 默认包含统计信息
   });
 
   // 新增：高亮相关状态
