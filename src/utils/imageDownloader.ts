@@ -396,6 +396,21 @@ export async function downloadImage({
     const subTitleY = titleBarHeight * 0.65;
     
     ctx.fillText('拼豆图纸生成工具', titleStartX, subTitleY);
+
+    // 使用提示：在标题栏右侧显示简短说明，与副标题保持在同一行，右对齐并留出内边距
+    const usageFontSize = Math.max(12, Math.floor(subTitleFontSize * 0.6));
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
+    ctx.font = `400 ${usageFontSize}px system-ui, -apple-system, sans-serif`;
+    // 与副标题同一行，右侧对齐，保留 20px 的右侧内边距
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    const usageX = downloadWidth - 20;
+    const usageY = subTitleY;
+    ctx.fillText('提示：长按图纸保存到本地或照片库', usageX, usageY);
+
+    // 恢复默认文本对齐和基线，供后续绘制使用
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
     
     
     
@@ -705,15 +720,60 @@ export async function downloadImage({
       }
     }
 
+    // 为避免浏览器将弹窗拦截（若 window.open 在异步/耗时操作后调用），
+    // 先立即打开一个空白窗口并显示“生成中”提示，随后把生成的 Blob URL 填入该窗口。
+    let previewWin: Window | null = null;
     try {
-      const dataURL = downloadCanvas.toDataURL('image/png');
-      // 在新窗口中打开图片，而不是直接下载
-      // 用户可以长按保存图片到自己想要的位置
-      window.open(dataURL, '_blank');
-      console.log("Grid image opened in browser.");
+      previewWin = window.open('', '_blank');
+      if (previewWin && previewWin.document) {
+        previewWin.document.title = 'PerlerCraft 预览';
+        previewWin.document.body.style.fontFamily = 'system-ui, -apple-system, sans-serif';
+        previewWin.document.body.style.display = 'flex';
+        previewWin.document.body.style.justifyContent = 'center';
+        previewWin.document.body.style.alignItems = 'center';
+        previewWin.document.body.style.height = '100vh';
+        previewWin.document.body.innerHTML = '<div style="text-align:center;color:#666"><h2>正在生成图纸预览…</h2><p>请稍候</p></div>';
+      }
+    } catch (openErr) {
+      // 无法打开预览窗口，后续仍会尝试直接打开图片 URL
+      console.warn('无法打开预览窗口，可能被浏览器阻止：', openErr);
+      previewWin = null;
+    }
+
+    // 使用 toBlob 更高效地生成二进制内容并创建 ObjectURL
+    try {
+      downloadCanvas.toBlob((blob) => {
+        if (!blob) {
+          if (previewWin && !previewWin.closed) previewWin.document.body.innerText = '无法生成图纸。';
+          alert('无法生成图纸。');
+          return;
+        }
+
+        const url = URL.createObjectURL(blob);
+
+        if (previewWin && !previewWin.closed) {
+          try {
+            previewWin.location.href = url;
+          } catch (assignErr) {
+            // 某些浏览器/标签页策略可能在跨域时阻止 location.assign，作为兜底，直接打开新标签
+            console.warn('无法在预览窗口中设置 URL，尝试在新窗口打开：', assignErr);
+            window.open(url, '_blank');
+          }
+        } else {
+          // 预览窗口不可用，直接打开图片
+          window.open(url, '_blank');
+        }
+
+        // 在一段时间后释放对象 URL
+        setTimeout(() => {
+          URL.revokeObjectURL(url);
+        }, 60_000);
+
+        console.log('Grid image opened in browser (blob URL).');
+      }, 'image/png');
     } catch (e) {
-      console.error("打开图纸失败:", e);
-      alert("无法生成图纸。");
+      console.error('打开图纸失败:', e);
+      alert('无法生成图纸。');
     }
   };
   
