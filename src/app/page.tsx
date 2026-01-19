@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useState, useRef, ChangeEvent, DragEvent, useEffect, useMemo, useCallback } from 'react';
-import Script from 'next/script';
 import InstallPWA from '../components/InstallPWA';
 
 // 导入像素化工具和类型
@@ -2087,50 +2086,6 @@ export default function Home() {
           </div>
         </div>
       )}
-
-      {/* ++ 修改：添加 onLoad 回调函数 ++ */}
-      <Script
-        async
-        src="//busuanzi.ibruce.info/busuanzi/2.3/busuanzi.pure.mini.js"
-        strategy="lazyOnload"
-        onLoad={() => {
-          const basePV = 378536; // ++ 预设 PV 基数 ++
-          const baseUV = 257864; // ++ 预设 UV 基数 ++
-
-          const updateCount = (spanId: string, baseValue: number) => {
-            const targetNode = document.getElementById(spanId);
-            if (!targetNode) return;
-
-            const observer = new MutationObserver((mutationsList) => {
-              for (const mutation of mutationsList) {
-                if (mutation.type === 'childList' || mutation.type === 'characterData') {
-                  const currentValueText = targetNode.textContent?.trim() || '0';
-                  if (currentValueText !== '...') {
-                    const currentValue = parseInt(currentValueText.replace(/,/g, ''), 10) || 0;
-                    targetNode.textContent = (currentValue + baseValue).toLocaleString();
-                    observer.disconnect(); // ++ 更新后停止观察 ++ 
-                    // console.log(`Updated ${spanId} from ${currentValueText} to ${targetNode.textContent}`);
-                    break; // 处理完第一个有效更新即可
-                  }
-                }
-              }
-            });
-
-            observer.observe(targetNode, { childList: true, characterData: true, subtree: true });
-
-            // ++ 处理初始值已经是数字的情况 (如果脚本加载很快) ++
-            const initialValueText = targetNode.textContent?.trim() || '0';
-            if (initialValueText !== '...') {
-              const initialValue = parseInt(initialValueText.replace(/,/g, ''), 10) || 0;
-              targetNode.textContent = (initialValue + baseValue).toLocaleString();
-              observer.disconnect(); // 已更新，无需再观察
-            }
-          };
-
-          updateCount('busuanzi_value_site_pv', basePV);
-          updateCount('busuanzi_value_site_uv', baseUV);
-        }}
-      />
 
       {/* Apply dark mode styles to the main container */}
       <div className="min-h-screen p-4 sm:p-6 flex flex-col items-center bg-gradient-to-b from-gray-50 to-white dark:from-gray-800 dark:to-gray-900 font-[family-name:var(--font-geist-sans)] overflow-x-hidden">
