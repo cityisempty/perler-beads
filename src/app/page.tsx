@@ -328,8 +328,7 @@ export default function Home() {
     [tokenHashSet]
   );
 
-  // 清除手机号验证（备用，可用于切换手机号场景）
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  // 清除手机号验证（用于切换手机号场景）
   const clearPhoneAuth = useCallback(() => {
     setPhoneAccessControl({
       phoneHash: null,
@@ -2772,6 +2771,27 @@ export default function Home() {
                         className="inline-flex items-center rounded border border-gray-300 dark:border-gray-600 px-2 py-1 text-xs text-gray-600 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
                       >
                         清除授权
+                      </button>
+                    )}
+                    {isPhoneActive && phoneRemainingUses === 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          clearPhoneAuth();
+                          setIsPhoneModalOpen(true);
+                        }}
+                        className="inline-flex items-center rounded border border-orange-400 dark:border-orange-500 px-2 py-1 text-xs text-orange-600 dark:text-orange-400 hover:bg-orange-50 dark:hover:bg-orange-900/30 transition-colors"
+                      >
+                        次数已用完，更换手机号
+                      </button>
+                    )}
+                    {isPhoneActive && phoneRemainingUses > 0 && (
+                      <button
+                        type="button"
+                        onClick={clearPhoneAuth}
+                        className="inline-flex items-center rounded border border-gray-300 dark:border-gray-600 px-2 py-1 text-xs text-gray-600 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                      >
+                        更换手机号
                       </button>
                     )}
                   </>
