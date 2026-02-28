@@ -12,7 +12,6 @@ import {
   MappedPixel,
   hexToRgb,
   colorDistance,
-  findClosestPaletteColor
 } from '../utils/pixelation';
 
 // 导入新的类型和组件
@@ -48,6 +47,11 @@ const USAGE_STORAGE_PREFIX = 'perlercraft:tokenUsage:';
 const IS_TOKEN_GATING_ENABLED = tokenHashes.length > 0;
 const SHOW_INSTALL_PROMPT = false;
 const SHOW_FLOATING_TOOLBAR = false;
+
+// 拼豆尺寸常量
+const BEAD_SIZE_MM = 2.6; // 豆子直径 (mm)
+const BOARD_PEGS = 52;    // 标准豆板每边格数 (52×52)
+const BOARD_SIZE_CM = +(BOARD_PEGS * BEAD_SIZE_MM / 10).toFixed(1); // ≈13.5cm
 
 // 手机号验证相关常量
 const PHONE_HASH_KEY = 'perlercraft:phoneHash';
@@ -128,10 +132,14 @@ import FocusModePreDownloadModal from '../components/FocusModePreDownloadModal';
 
 export default function Home() {
   const [originalImageSrc, setOriginalImageSrc] = useState<string | null>(null);
-  const [granularity, setGranularity] = useState<number>(50);
-  const [granularityInput, setGranularityInput] = useState<string>("50");
+  const [granularity, setGranularity] = useState<number>(BOARD_PEGS);
+  const [granularityInput, setGranularityInput] = useState<string>(String(BOARD_PEGS));
   const [similarityThreshold, setSimilarityThreshold] = useState<number>(30);
   const [similarityThresholdInput, setSimilarityThresholdInput] = useState<string>("30");
+  // 成品尺寸输入状态（cm）— 与格数双向联动
+  const [desiredWidthCm, setDesiredWidthCm] = useState<string>((BOARD_PEGS * BEAD_SIZE_MM / 10).toFixed(1));
+  // 处理中状态指示
+  const [isProcessing, setIsProcessing] = useState<boolean>(false);
   // 添加像素化模式状态
   const [pixelationMode, setPixelationMode] = useState<PixelationMode>(PixelationMode.Dominant); // 默认为卡通模式
 
@@ -145,6 +153,7 @@ export default function Home() {
   const [excludedColorKeys, setExcludedColorKeys] = useState<Set<string>>(new Set());
   const [showExcludedColors, setShowExcludedColors] = useState<boolean>(false);
   // 用于记录初始网格颜色（hex值），用于显示排除功能
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [initialGridColorKeys, setInitialGridColorKeys] = useState<Set<string>>(new Set());
   const [mappedPixelData, setMappedPixelData] = useState<MappedPixel[][] | null>(null);
   const [gridDimensions, setGridDimensions] = useState<{ N: number; M: number } | null>(null);
@@ -154,6 +163,12 @@ export default function Home() {
   const [remapTrigger, setRemapTrigger] = useState<number>(0);
   const [isManualColoringMode, setIsManualColoringMode] = useState<boolean>(false);
   const [selectedColor, setSelectedColor] = useState<MappedPixel | null>(null);
+  // 手动编辑模式进入前的快照（用于“不保存退出”）
+  const manualModeSnapshotRef = useRef<{
+    pixelData: MappedPixel[][] | null;
+    colorCounts: { [key: string]: { count: number; color: string } } | null;
+    totalBeadCount: number;
+  } | null>(null);
   // 新增：一键擦除模式状态
   const [isEraseMode, setIsEraseMode] = useState<boolean>(false);
   const [customPaletteSelections, setCustomPaletteSelections] = useState<PaletteSelections>({});
@@ -576,11 +591,7 @@ export default function Home() {
 
   // --- Event Handlers ---
 
-  // 专心拼豆模式相关处理函数
-  const handleEnterFocusMode = () => {
-    setIsFocusModePreDownloadModalOpen(true);
-  };
-
+  // 专心拼豆模式相关处理函数（按钮已移除，保留 modal 逻辑以备后用）
   const handleProceedToFocusMode = () => {
     // 保存数据到localStorage供专心拼豆模式使用
     localStorage.setItem('focusMode_pixelData', JSON.stringify(mappedPixelData));
@@ -807,11 +818,11 @@ export default function Home() {
         setColorCounts(null);
         setTotalBeadCount(0);
         setInitialGridColorKeys(new Set()); // ++ 重置初始键 ++
-        // ++ 重置横轴格子数量为默认值 ++
-        const defaultGranularity = 100;
+        // ++ 重置横轴格子数量为默认值（一张标准豆板）++
+        const defaultGranularity = BOARD_PEGS;
         setGranularity(defaultGranularity);
         setGranularityInput(defaultGranularity.toString());
-        setRemapTrigger(prev => prev + 1); // Trigger full remap for new image
+        setDesiredWidthCm((defaultGranularity * BEAD_SIZE_MM / 10).toFixed(1));
       };
       reader.onerror = () => {
         console.error("文件读取失败");
@@ -849,9 +860,26 @@ export default function Home() {
     }
   };
 
-  // ++ 新增：处理输入框变化的函数 ++
+  // ++ 处理图纸宽度格数输入变化（同时更新cm显示）++
   const handleGranularityInputChange = (event: ChangeEvent<HTMLInputElement>) => {
-    setGranularityInput(event.target.value);
+    const value = event.target.value;
+    setGranularityInput(value);
+    const n = parseInt(value, 10);
+    if (!isNaN(n) && n > 0) {
+      setDesiredWidthCm((n * BEAD_SIZE_MM / 10).toFixed(1));
+    }
+  };
+
+  // ++ 处理成品宽度cm输入变化（反向计算格数）++
+  const handleDesiredWidthCmChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const value = event.target.value;
+    setDesiredWidthCm(value);
+    const cm = parseFloat(value);
+    if (!isNaN(cm) && cm > 0) {
+      const gridCount = Math.round(cm * 10 / BEAD_SIZE_MM);
+      const clamped = Math.max(10, Math.min(300, gridCount));
+      setGranularityInput(clamped.toString());
+    }
   };
 
   // ++ 添加：处理相似度输入框变化的函数 ++
@@ -859,58 +887,7 @@ export default function Home() {
     setSimilarityThresholdInput(event.target.value);
   };
 
-  // ++ 修改：处理确认按钮点击的函数，同时处理两个参数 ++
-  const handleConfirmParameters = () => {
-    // 处理格子数
-    const minGranularity = 10;
-    const maxGranularity = 300;
-    let newGranularity = parseInt(granularityInput, 10);
-
-    if (isNaN(newGranularity) || newGranularity < minGranularity) {
-      newGranularity = minGranularity;
-    } else if (newGranularity > maxGranularity) {
-      newGranularity = maxGranularity;
-    }
-
-    // 处理相似度阈值
-    const minSimilarity = 0;
-    const maxSimilarity = 100;
-    let newSimilarity = parseInt(similarityThresholdInput, 10);
-
-    if (isNaN(newSimilarity) || newSimilarity < minSimilarity) {
-      newSimilarity = minSimilarity;
-    } else if (newSimilarity > maxSimilarity) {
-      newSimilarity = maxSimilarity;
-    }
-
-    // 检查值是否有变化
-    const granularityChanged = newGranularity !== granularity;
-    const similarityChanged = newSimilarity !== similarityThreshold;
-
-    if (granularityChanged) {
-      console.log(`Confirming new granularity: ${newGranularity}`);
-      setGranularity(newGranularity);
-    }
-
-    if (similarityChanged) {
-      console.log(`Confirming new similarity threshold: ${newSimilarity}`);
-      setSimilarityThreshold(newSimilarity);
-    }
-
-    // 只有在有值变化时才触发重映射
-    if (granularityChanged || similarityChanged) {
-      setRemapTrigger(prev => prev + 1);
-      // 退出手动上色模式
-      setIsManualColoringMode(false);
-      setSelectedColor(null);
-    }
-
-    // 始终同步输入框的值
-    setGranularityInput(newGranularity.toString());
-    setSimilarityThresholdInput(newSimilarity.toString());
-  };
-
-  // 添加像素化模式切换处理函数
+  // 像素化模式切换处理 - 立即应用
   const handlePixelationModeChange = (event: ChangeEvent<HTMLSelectElement>) => {
     const newMode = event.target.value as PixelationMode;
     if (Object.values(PixelationMode).includes(newMode)) {
@@ -926,6 +903,7 @@ export default function Home() {
   // 修改pixelateImage函数接收模式参数
   const pixelateImage = (imageSrc: string, detailLevel: number, threshold: number, currentPalette: PaletteColor[], mode: PixelationMode) => {
     console.log(`Attempting to pixelate with detail: ${detailLevel}, threshold: ${threshold}, mode: ${mode}`);
+    setIsProcessing(true); // 开始处理
     const originalCanvas = originalCanvasRef.current;
     const pixelatedCanvas = pixelatedCanvasRef.current;
 
@@ -1146,8 +1124,10 @@ export default function Home() {
         console.log("Color counts updated based on merged data (after merging):", counts);
         console.log("Total bead count (total beads):", totalCount);
         console.log("Stored initial grid color keys:", Object.keys(counts));
+        setIsProcessing(false); // 处理完成
       } else {
         console.error("Pixelated canvas ref is null, skipping draw call in pixelateImage.");
+        setIsProcessing(false); // 处理失败也要重置
       }
     }; // 正确闭合 img.onload 函数
 
@@ -1189,6 +1169,48 @@ export default function Home() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [originalImageSrc, granularity, similarityThreshold, customPaletteSelections, pixelationMode, remapTrigger]);
+
+  // ++ Debounce 自动应用参数：用户修改输入框后 800ms 自动重新渲染 ++
+  const granularityRef = useRef(granularity);
+  const similarityRef = useRef(similarityThreshold);
+  useEffect(() => { granularityRef.current = granularity; }, [granularity]);
+  useEffect(() => { similarityRef.current = similarityThreshold; }, [similarityThreshold]);
+
+  useEffect(() => {
+    if (!originalImageSrc) return;
+
+    const timer = setTimeout(() => {
+      const minGranularity = 10;
+      const maxGranularity = 300;
+      let newGranularity = parseInt(granularityInput, 10);
+      if (isNaN(newGranularity) || newGranularity < minGranularity) newGranularity = minGranularity;
+      else if (newGranularity > maxGranularity) newGranularity = maxGranularity;
+
+      const minSimilarity = 0;
+      const maxSimilarity = 100;
+      let newSimilarity = parseInt(similarityThresholdInput, 10);
+      if (isNaN(newSimilarity) || newSimilarity < minSimilarity) newSimilarity = minSimilarity;
+      else if (newSimilarity > maxSimilarity) newSimilarity = maxSimilarity;
+
+      const granularityChanged = newGranularity !== granularityRef.current;
+      const similarityChanged = newSimilarity !== similarityRef.current;
+
+      if (granularityChanged || similarityChanged) {
+        if (granularityChanged) setGranularity(newGranularity);
+        if (similarityChanged) setSimilarityThreshold(newSimilarity);
+        // granularity/similarityThreshold 变化会自动触发上面的 useEffect -> pixelateImage
+        setIsManualColoringMode(false);
+        setSelectedColor(null);
+      }
+
+      setGranularityInput(newGranularity.toString());
+      setSimilarityThresholdInput(newSimilarity.toString());
+      // 同步更新cm显示
+      setDesiredWidthCm((newGranularity * BEAD_SIZE_MM / 10).toFixed(1));
+    }, 800);
+
+    return () => clearTimeout(timer);
+  }, [granularityInput, similarityThresholdInput, originalImageSrc]);
 
   // 确保文件输入框引用在组件挂载后正确设置
   useEffect(() => {
@@ -1356,100 +1378,53 @@ export default function Home() {
     }
   };
 
-  // --- Handler to toggle color exclusion ---
+  // --- Handler to toggle color exclusion (真正删除模式：标记为透明而非重映射) ---
   const handleToggleExcludeColor = (hexKey: string) => {
     const currentExcluded = excludedColorKeys;
     const isExcluding = !currentExcluded.has(hexKey);
 
     if (isExcluding) {
-      console.log(`---------\nAttempting to EXCLUDE color: ${hexKey}`);
+      console.log(`---------\nExcluding color: ${hexKey} (marking as transparent)`);
 
-      // --- 确保初始颜色键已记录 ---
-      if (initialGridColorKeys.size === 0) {
-        console.error("Cannot exclude color: Initial grid color keys not yet calculated.");
-        alert("无法排除颜色，初始颜色数据尚未准备好，请稍候。");
+      if (!mappedPixelData || !gridDimensions) {
+        console.error("Cannot exclude color: Missing pixel data.");
+        alert("无法移除颜色，像素数据尚未准备好。");
         return;
       }
-      console.log("Initial Grid Hex Keys:", Array.from(initialGridColorKeys));
-      console.log("Currently Excluded Hex Keys (before this op):", Array.from(currentExcluded));
 
       const nextExcludedKeys = new Set(currentExcluded);
       nextExcludedKeys.add(hexKey);
 
-      // --- 使用初始颜色键进行重映射目标逻辑 ---
-      // 1. 从初始网格颜色集合开始（hex值）
-      const potentialRemapHexKeys = new Set(initialGridColorKeys);
-      console.log("Step 1: Potential Hex Keys (from initial):", Array.from(potentialRemapHexKeys));
-
-      // 2. 移除当前要排除的hex键
-      potentialRemapHexKeys.delete(hexKey);
-      console.log(`Step 2: Potential Hex Keys (after removing ${hexKey}):`, Array.from(potentialRemapHexKeys));
-
-      // 3. 移除任何*其他*当前也被排除的hex键
-      currentExcluded.forEach(excludedHexKey => {
-        potentialRemapHexKeys.delete(excludedHexKey);
-      });
-      console.log("Step 3: Potential Hex Keys (after removing other current exclusions):", Array.from(potentialRemapHexKeys));
-
-      // 4. 基于剩余的hex值创建重映射调色板
-      const remapTargetPalette = fullBeadPalette.filter(color => potentialRemapHexKeys.has(color.hex.toUpperCase()));
-      const remapTargetHexKeys = remapTargetPalette.map(p => p.hex.toUpperCase());
-      console.log("Step 4: Remap Target Palette Hex Keys:", remapTargetHexKeys);
-
-      // 5. *** 关键检查 ***：如果在考虑所有排除项后，没有*初始*颜色可供映射，则阻止此次排除
-      if (remapTargetPalette.length === 0) {
-        console.warn(`Cannot exclude color '${hexKey}'. No other valid colors from the initial grid remain after considering all current exclusions.`);
-        alert(`无法排除颜色 ${hexKey}，因为图中最初存在的其他可用颜色也已被排除。请先恢复部分其他颜色。`);
-        console.log("---------");
-        return; // 停止排除过程
-      }
-      console.log(`Remapping target palette (based on initial grid colors minus all exclusions) contains ${remapTargetPalette.length} colors.`);
-
-      // 查找被排除颜色的RGB值用于重映射
-      const excludedColorData = fullBeadPalette.find(p => p.hex.toUpperCase() === hexKey);
-      // 检查排除颜色的数据是否存在
-      if (!excludedColorData || !mappedPixelData || !gridDimensions) {
-        console.error("Cannot exclude color: Missing data for remapping.");
-        alert("无法排除颜色，缺少必要数据。");
-        console.log("---------");
-        return;
-      }
-
-      console.log(`Remapping cells currently using excluded color: ${hexKey}`);
-      // 仅在需要重映射时创建深拷贝
+      // 将使用该颜色的像素标记为透明/外部（真正删除，不替换为其他颜色）
       const newMappedData = mappedPixelData.map(row => row.map(cell => ({ ...cell })));
-      let remappedCount = 0;
+      let removedCount = 0;
       const { N, M } = gridDimensions;
-      let firstReplacementHex: string | null = null;
 
       for (let j = 0; j < M; j++) {
         for (let i = 0; i < N; i++) {
           const cell = newMappedData[j]?.[i];
-          // 此条件正确地仅针对具有排除hex值的单元格
           if (cell && !cell.isExternal && cell.color.toUpperCase() === hexKey) {
-            // *** 使用派生的 remapTargetPalette 查找最接近的颜色 ***
-            const replacementColor = findClosestPaletteColor(excludedColorData.rgb, remapTargetPalette);
-            if (!firstReplacementHex) firstReplacementHex = replacementColor.hex;
+            // 标记为透明/外部 — 真正删除，不重映射
             newMappedData[j][i] = {
-              ...cell,
-              key: replacementColor.key,
-              color: replacementColor.hex
+              key: TRANSPARENT_KEY,
+              color: '#FFFFFF',
+              isExternal: true
             };
-            remappedCount++;
+            removedCount++;
           }
         }
       }
-      console.log(`Remapped ${remappedCount} cells. First replacement hex found was: ${firstReplacementHex || 'N/A'}`);
+      console.log(`Removed ${removedCount} cells of color ${hexKey} (set to transparent)`);
 
-      // 同时更新状态
-      setExcludedColorKeys(nextExcludedKeys); // 应用此颜色的排除
-      setMappedPixelData(newMappedData); // 使用重映射的数据更新
+      // 更新状态
+      setExcludedColorKeys(nextExcludedKeys);
+      setMappedPixelData(newMappedData);
 
-      // 基于*新*映射数据重新计算计数（以hex为键）
+      // 重新计算计数（排除的颜色不再参与统计）
       const newCounts: { [hexKey: string]: { count: number; color: string } } = {};
       let newTotalCount = 0;
       newMappedData.flat().forEach(cell => {
-        if (cell && cell.color && !cell.isExternal) {
+        if (cell && cell.color && !cell.isExternal && cell.key !== TRANSPARENT_KEY) {
           const cellHex = cell.color.toUpperCase();
           if (!newCounts[cellHex]) {
             newCounts[cellHex] = { count: 0, color: cellHex };
@@ -1460,16 +1435,8 @@ export default function Home() {
       });
       setColorCounts(newCounts);
       setTotalBeadCount(newTotalCount);
-      console.log("State updated after exclusion and local remap based on initial grid colors.");
+      console.log("Color removed and stats updated.");
       console.log("---------");
-
-      // ++ 在更新状态后，重新绘制 Canvas ++
-      if (pixelatedCanvasRef.current && gridDimensions) {
-        setMappedPixelData(newMappedData);
-        // 不要调用 setGridDimensions，因为颜色排除不需要改变网格尺寸
-      } else {
-        console.error("Canvas ref or grid dimensions missing, skipping draw call in handleToggleExcludeColor.");
-      }
 
     } else {
       // --- Re-including ---
@@ -1478,8 +1445,8 @@ export default function Home() {
       const nextExcludedKeys = new Set(currentExcluded);
       nextExcludedKeys.delete(hexKey);
       setExcludedColorKeys(nextExcludedKeys);
-      // 此处无需重置 initialGridColorKeys，完全重映射会通过 pixelateImage 重新计算它
-      setRemapTrigger(prev => prev + 1); // *** KEPT setRemapTrigger here for re-inclusion ***
+      // 完全重处理图像以恢复颜色
+      setRemapTrigger(prev => prev + 1);
       console.log("---------");
     }
     // ++ Exit manual mode if colors are excluded/included ++
@@ -2156,7 +2123,7 @@ export default function Home() {
                 {/* Brand name - PerlerCraft with ultra fancy effects */}
                 <div className="relative">
                   <h1 className="relative text-4xl sm:text-6xl font-black text-transparent bg-clip-text bg-gradient-to-r from-pink-500 via-purple-500 via-blue-500 to-cyan-400 tracking-wider drop-shadow-2xl transform hover:scale-105 transition-transform duration-300 animate-bounce">
-                    PerlerCraft
+                    拼豆底稿大师
                   </h1>
 
                   {/* Super fancy geometric decorations */}
@@ -2176,29 +2143,6 @@ export default function Home() {
                   <div className="absolute bottom-1 right-0 w-1 h-1 bg-purple-300 rounded-full animate-pulse delay-1000"></div>
                 </div>
 
-                {/* Tool name - 拼豆底稿生成器 with hyper cute style */}
-                <div className="relative">
-                  <h2 className="relative text-xl sm:text-3xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-500 via-teal-500 via-green-500 to-emerald-400 tracking-widest transform hover:scale-102 transition-all duration-300">
-                    拼豆底稿生成器
-                  </h2>
-
-                  {/* Super cute geometric shapes */}
-                  <div className="absolute -top-3 -left-6 w-3.5 h-3.5 bg-gradient-to-br from-blue-400 to-teal-500 rounded-full animate-bounce delay-75"></div>
-                  <div className="absolute -top-1 -left-3 w-2 h-2 bg-gradient-to-br from-teal-400 to-green-500 rounded-full animate-ping delay-150"></div>
-                  <div className="absolute -top-0.5 -left-1 w-1 h-1 bg-gradient-to-br from-green-400 to-emerald-500 rotate-45 animate-pulse delay-225"></div>
-                  <div className="absolute -top-3 -right-6 w-3 h-3 bg-gradient-to-br from-green-400 to-emerald-500 rotate-45 animate-spin delay-300"></div>
-                  <div className="absolute -top-1 -right-3 w-1.5 h-1.5 bg-gradient-to-br from-emerald-400 to-cyan-500 rounded-full animate-bounce delay-375"></div>
-                  <div className="absolute -bottom-2 -right-3 w-2.5 h-2.5 bg-gradient-to-br from-emerald-400 to-teal-500 rounded-full animate-pulse delay-450"></div>
-                  <div className="absolute -bottom-1 -left-1 w-2 h-2 bg-gradient-to-br from-teal-400 to-blue-500 rotate-45 animate-spin delay-525"></div>
-
-                  {/* Mini sparkles around tool name */}
-                  <div className="absolute -top-2 left-2 w-0.5 h-0.5 bg-blue-300 rounded-full animate-ping delay-600"></div>
-                  <div className="absolute -top-1 right-2 w-1 h-1 bg-teal-300 rounded-full animate-pulse delay-675"></div>
-                  <div className="absolute bottom-0 left-4 w-0.5 h-0.5 bg-green-300 rounded-full animate-bounce delay-750"></div>
-                  <div className="absolute bottom-1 right-4 w-0.5 h-0.5 bg-emerald-300 rounded-full animate-pulse delay-825"></div>
-                  <div className="absolute top-2 -left-2 w-0.5 h-0.5 bg-cyan-300 rounded-full animate-ping delay-900"></div>
-                  <div className="absolute top-2 -right-2 w-1 h-1 bg-teal-300 rounded-full animate-bounce delay-975"></div>
-                </div>
               </div>
 
               {/* Ultra cute floating elements constellation around the entire group */}
@@ -2264,7 +2208,7 @@ export default function Home() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
                 {/* Text color */}
-                <span className="text-indigo-700 dark:text-indigo-300">小贴士：使用像素图进行转换前，请确保图片的边缘吻合像素格子的边界线，这样可以获得更精确的切割效果和更好的成品。</span>
+                <span className="text-indigo-700 dark:text-indigo-300">小贴士：上传图片后，输入你想要的成品宽度（cm）或格数，系统会自动帮你计算尺寸和所需豆板数量。修改参数后会自动更新预览。</span>
               </p>
             </div>
           )}
@@ -2277,68 +2221,139 @@ export default function Home() {
               {/* ++ HIDE Control Row in manual mode ++ */}
               {!isManualColoringMode && (
                 /* 修改控制面板网格布局 */
-                <div className="w-full md:max-w-2xl grid grid-cols-1 sm:grid-cols-2 gap-4 bg-white dark:bg-gray-800 p-4 sm:p-5 rounded-xl shadow-md border border-gray-100 dark:border-gray-700">
-                  {/* Granularity Input */}
-                  <div className="flex-1">
-                    {/* Label color */}
-                    <label htmlFor="granularityInput" className="block text-xs sm:text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5 sm:mb-2">
-                      横轴切割数量 (10-300):
-                    </label>
-                    <div className="flex items-center gap-2">
-                      {/* Input field styles */}
-                      <input
-                        type="number"
-                        id="granularityInput"
-                        value={granularityInput}
-                        onChange={handleGranularityInputChange}
-                        className="w-full p-1.5 border border-gray-300 dark:border-gray-600 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500 h-9 shadow-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500"
-                        min="10"
-                        max="300"
-                      />
+                <div className="w-full md:max-w-2xl grid grid-cols-1 gap-4 bg-white dark:bg-gray-800 p-4 sm:p-5 rounded-xl shadow-md border border-gray-100 dark:border-gray-700">
+
+                  {/* 作品尺寸设置区 */}
+                  <div className="sm:col-span-2">
+                    <div className="flex items-center gap-2 mb-3">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" /></svg>
+                      <span className="text-sm font-medium text-gray-700 dark:text-gray-300">作品尺寸</span>
+                      {isProcessing && (
+                        <span className="ml-auto flex items-center gap-1.5 text-xs text-blue-500 dark:text-blue-400 animate-pulse">
+                          <svg className="animate-spin h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                          处理中...
+                        </span>
+                      )}
                     </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      {/* 成品宽度 cm */}
+                      <div>
+                        <label htmlFor="desiredWidthCm" className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
+                          成品宽度 (cm)
+                        </label>
+                        <input
+                          type="number"
+                          id="desiredWidthCm"
+                          value={desiredWidthCm}
+                          onChange={handleDesiredWidthCmChange}
+                          className="w-full p-1.5 border border-gray-300 dark:border-gray-600 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500 h-9 shadow-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200"
+                          min="1"
+                          max="80"
+                          step="0.1"
+                        />
+                      </div>
+                      {/* 图纸宽度 格数 */}
+                      <div>
+                        <label htmlFor="granularityInput" className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
+                          图纸宽度（格数）
+                        </label>
+                        <input
+                          type="number"
+                          id="granularityInput"
+                          value={granularityInput}
+                          onChange={handleGranularityInputChange}
+                          className="w-full p-1.5 border border-gray-300 dark:border-gray-600 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500 h-9 shadow-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200"
+                          min="10"
+                          max="300"
+                        />
+                      </div>
+                    </div>
+
+                    {/* 尺寸提示 */}
+                    <p className="text-xs text-gray-400 dark:text-gray-500 mt-1.5">
+                      💡 标准豆板 {BOARD_PEGS}×{BOARD_PEGS}格 ≈ {BOARD_SIZE_CM}×{BOARD_SIZE_CM}cm ｜ 豆子直径 {BEAD_SIZE_MM}mm
+                    </p>
+
+                    {/* 尺寸计算信息卡片（仅在有图片时显示）*/}
+                    {gridDimensions && (
+                      <div className="mt-2 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-100 dark:border-blue-800/40">
+                        <div className="grid grid-cols-1 gap-1.5 text-xs">
+                          <div className="flex items-start gap-2 text-blue-700 dark:text-blue-300">
+                            <span className="flex-shrink-0">📐</span>
+                            <div>
+                              <span className="font-medium">完成后作品大小：</span>
+                              <span>{(gridDimensions.N * BEAD_SIZE_MM / 10).toFixed(1)} × {(gridDimensions.M * BEAD_SIZE_MM / 10).toFixed(1)} cm</span>
+                              <span className="text-blue-500 dark:text-blue-400 ml-1">（宽 × 高）</span>
+                            </div>
+                          </div>
+                          <div className="flex items-start gap-2 text-blue-700 dark:text-blue-300">
+                            <span className="flex-shrink-0">📏</span>
+                            <div>
+                              <span className="font-medium">需要的豆子格数：</span>
+                              <span>横 {gridDimensions.N} 格 × 纵 {gridDimensions.M} 格</span>
+                            </div>
+                          </div>
+                          <div className="flex items-start gap-2 text-blue-700 dark:text-blue-300">
+                            <span className="flex-shrink-0">🧩</span>
+                            <div>
+                              <span className="font-medium">需要豆板：</span>
+                              <span>{Math.ceil(gridDimensions.N / BOARD_PEGS)} × {Math.ceil(gridDimensions.M / BOARD_PEGS)} 块</span>
+                              {(Math.ceil(gridDimensions.N / BOARD_PEGS) > 1 || Math.ceil(gridDimensions.M / BOARD_PEGS) > 1) && (
+                                <span className="text-blue-500 dark:text-blue-400 ml-1">（需要多块豆板拼接）</span>
+                              )}
+                              {Math.ceil(gridDimensions.N / BOARD_PEGS) === 1 && Math.ceil(gridDimensions.M / BOARD_PEGS) === 1 && (
+                                <span className="text-green-600 dark:text-green-400 ml-1">（1块豆板即可完成 ✓）</span>
+                              )}
+                            </div>
+                          </div>
+                          {totalBeadCount > 0 && (
+                            <div className="flex items-start gap-2 text-blue-700 dark:text-blue-300">
+                              <span className="flex-shrink-0">🔢</span>
+                              <div>
+                                <span className="font-medium">格子总数：</span>
+                                <span>{totalBeadCount.toLocaleString()} ,铺满需要{totalBeadCount.toLocaleString()} 颗豆子</span>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </div>
 
-                  {/* Similarity Threshold Input */}
-                  <div className="flex-1">
-                    {/* Label color */}
-                    <label htmlFor="similarityThresholdInput" className="block text-xs sm:text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5 sm:mb-2">
-                      颜色合并阈值 (0-100):
-                    </label>
-                    <div className="flex items-center gap-2">
-                      {/* Input field styles */}
+                  {/* 颜色简化 + 渲染风格 */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    {/* 颜色简化程度 */}
+                    <div>
+                      <label htmlFor="similarityThresholdInput" className="block text-xs sm:text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        颜色简化程度
+                      </label>
                       <input
                         type="number"
                         id="similarityThresholdInput"
                         value={similarityThresholdInput}
                         onChange={handleSimilarityThresholdInputChange}
-                        className="w-full p-1.5 border border-gray-300 dark:border-gray-600 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500 h-9 shadow-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500"
+                        className="w-full p-1.5 border border-gray-300 dark:border-gray-600 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500 h-9 shadow-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200"
                         min="0"
                         max="100"
                       />
+                      <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">💡 0=最精细  100=最简化</p>
                     </div>
-                  </div>
 
-                  {/* Pixelation Mode Selector */}
-                  <div className="sm:col-span-2">
-                    {/* Label color */}
-                    <label htmlFor="pixelationModeSelect" className="block text-xs sm:text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5 sm:mb-2">处理模式:</label>
-                    <div className="flex items-center gap-2">
-                      {/* Select field styles */}
+                    {/* 渲染风格 */}
+                    <div>
+                      <label htmlFor="pixelationModeSelect" className="block text-xs sm:text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        渲染风格
+                      </label>
                       <select
                         id="pixelationModeSelect"
                         value={pixelationMode}
                         onChange={handlePixelationModeChange}
                         className="w-full p-1.5 border border-gray-300 dark:border-gray-600 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500 h-9 shadow-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200"
                       >
-                        <option value={PixelationMode.Dominant} className="bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200">卡通 (主色)</option>
-                        <option value={PixelationMode.Average} className="bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200">真实 (平均)</option>
+                        <option value={PixelationMode.Dominant} className="bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200">卡通风格 — 颜色更鲜明</option>
+                        <option value={PixelationMode.Average} className="bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200">写实风格 — 过渡更自然</option>
                       </select>
-
-                      {/* 确认按钮 - 现在对应两个输入框 */}
-                      <button
-                        onClick={handleConfirmParameters}
-                        className="h-9 bg-blue-500 hover:bg-blue-600 text-white text-sm px-3 rounded-md whitespace-nowrap transition-colors duration-200 shadow-sm flex-shrink-0"
-                      >应用设置</button>
                     </div>
                   </div>
 
@@ -2362,7 +2377,7 @@ export default function Home() {
                   </div>
 
                   {/* 自定义色板按钮 */}
-                  <div className="sm:col-span-2 mt-3">
+                  <div className="sm:col-span-2 mt-1">
                     <button
                       onClick={() => setIsCustomPaletteEditorOpen(true)}
                       className="w-full py-2.5 px-3 flex items-center justify-center gap-2 bg-gradient-to-r from-blue-500 to-purple-500 text-white font-medium rounded-lg shadow-sm transition-all duration-200 hover:shadow-md hover:from-blue-600 hover:to-purple-600"
@@ -2414,21 +2429,53 @@ export default function Home() {
                 {/* ++ 手动编辑模式提示信息 ++ */}
                 {isManualColoringMode && mappedPixelData && gridDimensions && (
                   <div className="w-full mb-4 p-3 bg-blue-50 dark:bg-gray-800 rounded-lg shadow-sm border border-blue-100 dark:border-gray-700">
-                    <div className="flex justify-center">
-                      <div className="bg-blue-50 dark:bg-gray-700 border border-blue-100 dark:border-gray-600 rounded-lg p-2 flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-3 text-xs text-gray-600 dark:text-gray-300 w-full sm:w-auto">
-                        <div className="flex items-center gap-1 w-full sm:w-auto">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-3 text-xs text-gray-600 dark:text-gray-300">
+                        <div className="flex items-center gap-1">
                           <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-blue-500 dark:text-blue-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
                           </svg>
-                          <span>使用右上角菜单操作</span>
+                          <span>手动编辑中，使用右上角菜单操作</span>
                         </div>
                         <span className="hidden sm:inline text-gray-300 dark:text-gray-500">|</span>
-                        <div className="flex items-center gap-1 w-full sm:w-auto">
+                        <div className="flex items-center gap-1">
                           <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-blue-500 dark:text-blue-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                           </svg>
                           <span>推荐电脑操作，上色更精准</span>
                         </div>
+                      </div>
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        <button
+                          onClick={() => {
+                            // 放弃修改：恢复快照
+                            const snapshot = manualModeSnapshotRef.current;
+                            if (snapshot) {
+                              if (snapshot.pixelData) setMappedPixelData(snapshot.pixelData);
+                              if (snapshot.colorCounts) setColorCounts(snapshot.colorCounts);
+                              setTotalBeadCount(snapshot.totalBeadCount);
+                            }
+                            manualModeSnapshotRef.current = null;
+                            setIsManualColoringMode(false);
+                            setSelectedColor(null);
+                            setIsEraseMode(false);
+                          }}
+                          className="px-2.5 py-1.5 text-xs bg-red-100 dark:bg-red-900/40 hover:bg-red-200 dark:hover:bg-red-800/50 text-red-700 dark:text-red-300 rounded-md transition-colors"
+                        >
+                          放弃修改
+                        </button>
+                        <button
+                          onClick={() => {
+                            // 保存并退出：不恢复快照
+                            manualModeSnapshotRef.current = null;
+                            setIsManualColoringMode(false);
+                            setSelectedColor(null);
+                            setIsEraseMode(false);
+                          }}
+                          className="px-2.5 py-1.5 text-xs bg-green-500 hover:bg-green-600 text-white rounded-md transition-colors"
+                        >
+                          保存退出 ✓
+                        </button>
                       </div>
                     </div>
                   </div>
@@ -2473,10 +2520,10 @@ export default function Home() {
             <div className="w-full md:max-w-2xl mt-6 bg-white dark:bg-gray-800 p-4 rounded-lg shadow border border-gray-100 dark:border-gray-700 color-stats-panel">
               {/* Title color */}
               <h3 className="text-lg font-semibold mb-1 text-gray-700 dark:text-gray-200 text-center">
-                去除杂色
+                颜色管理
               </h3>
               {/* Subtitle color */}
-              <p className="text-xs text-center text-gray-500 dark:text-gray-400 mb-3">点击下方列表中的颜色可将其从可用列表中排除。总计: {totalBeadCount} 颗</p>
+              <p className="text-xs text-center text-gray-500 dark:text-red-400 mb-3">点击颜色可从图纸中移除（变为透明），恢复后重新渲染。总计: {totalBeadCount} 颗.</p>
               <ul className="space-y-1 max-h-60 overflow-y-auto pr-2 text-sm">
                 {Object.keys(colorCounts)
                   .sort(sortColorKeys)
@@ -2496,7 +2543,7 @@ export default function Home() {
                           ? 'bg-red-100 dark:bg-red-900/50 hover:bg-red-200 dark:hover:bg-red-800/60 opacity-60 dark:opacity-70' // Darker red background for excluded
                           : 'hover:bg-gray-100 dark:hover:bg-gray-700'
                           }`}
-                        title={isExcluded ? `点击恢复 ${displayColorKey}` : `点击排除 ${displayColorKey}`}
+                        title={isExcluded ? `点击恢复 ${displayColorKey}` : `点击移除 ${displayColorKey}`}
                       >
                         <div className={`flex items-center space-x-2 ${isExcluded ? 'line-through' : ''}`}>
                           {/* Adjust color swatch border */}
@@ -2619,13 +2666,18 @@ export default function Home() {
             </div>
           )}
 
-          {/* ++ RENDER Enter Manual Mode Button ONLY when NOT in manual mode (before downloads) ++ */}
+          {/* ++ RENDER Enter Manual Mode Button ONLY when NOT in manual mode ++ */}
           {!isManualColoringMode && originalImageSrc && mappedPixelData && gridDimensions && (
-            <div className="w-full md:max-w-2xl mt-4 space-y-3"> {/* Wrapper div */}
-              {/* Manual Edit Mode Button */}
+            <div className="w-full md:max-w-2xl mt-4">
               <button
                 onClick={() => {
-                  setIsManualColoringMode(true); // Enter mode
+                  // 保存快照后进入手动模式
+                  manualModeSnapshotRef.current = {
+                    pixelData: mappedPixelData ? mappedPixelData.map(row => row.map(cell => ({ ...cell }))) : null,
+                    colorCounts: colorCounts ? JSON.parse(JSON.stringify(colorCounts)) : null,
+                    totalBeadCount: totalBeadCount,
+                  };
+                  setIsManualColoringMode(true);
                   setSelectedColor(null);
                   setTooltipData(null);
                 }}
@@ -2634,23 +2686,11 @@ export default function Home() {
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"> <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" /> </svg>
                 进入手动编辑模式
               </button>
-
-              {/* Focus Mode Button */}
-              <button
-                onClick={handleEnterFocusMode}
-                className={`w-full py-2.5 px-4 text-sm sm:text-base rounded-lg transition-all duration-300 flex items-center justify-center gap-2 bg-gradient-to-r from-purple-500 to-purple-600 hover:from-purple-600 hover:to-purple-700 text-white shadow-md hover:shadow-lg hover:translate-y-[-1px]`}
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                </svg>
-                进入专心拼豆模式（AplhaTest）
-              </button>
             </div>
-          )} {/* ++ End of RENDER Enter Manual Mode Button ++ */}
+          )}
 
-          {/* ++ HIDE Download Buttons in manual mode ++ */}
-          {!isManualColoringMode && originalImageSrc && mappedPixelData && (
+          {/* ++ Download Buttons (always visible when image loaded) ++ */}
+          {originalImageSrc && mappedPixelData && (
             <div className="w-full md:max-w-2xl mt-4">
               {/* 使用一个大按钮，现在所有的下载设置都通过弹窗控制 */}
               <button
@@ -2695,7 +2735,7 @@ export default function Home() {
           />
         )}
 
-        {/* 悬浮调色盘 */}
+        {/* 底部调色盘面板 */}
         {isManualColoringMode && (
           <FloatingColorPalette
             colors={currentGridColors}
