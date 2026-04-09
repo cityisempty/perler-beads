@@ -19,6 +19,13 @@ import { GridDownloadOptions } from '../types/downloadTypes';
 import DownloadSettingsModal, { gridLineColorOptions } from '../components/DownloadSettingsModal';
 import { downloadImage, importCsvData } from '../utils/imageDownloader';
 import tokenHashes from '../data/tokenHashes';
+import {
+  DEFAULT_PHONE_MAX_USES,
+  isValidPhoneHash,
+  isValidPhoneNumber,
+  normalizePhoneNumber,
+  type PhoneAccessSnapshot,
+} from '../lib/phoneAccess';
 
 import {
   colorSystemOptions,
@@ -41,10 +48,12 @@ const floatAnimation = `
   }
 `;
 
-const MAX_TOKEN_USES = 10;
+const MAX_TOKEN_USES = DEFAULT_PHONE_MAX_USES;
 const ACTIVE_TOKEN_KEY = 'perlercraft:activeCodeHash';
 const USAGE_STORAGE_PREFIX = 'perlercraft:tokenUsage:';
 const IS_TOKEN_GATING_ENABLED = tokenHashes.length > 0;
+const IS_PHONE_GATING_ENABLED = true;
+const IS_ACCESS_CONTROL_ENABLED = IS_TOKEN_GATING_ENABLED || IS_PHONE_GATING_ENABLED;
 const SHOW_INSTALL_PROMPT = false;
 const SHOW_FLOATING_TOOLBAR = false;
 
@@ -55,27 +64,9 @@ const BOARD_SIZE_CM = +(BOARD_PEGS * BEAD_SIZE_MM / 10).toFixed(1); // ≈13.5cm
 
 // 手机号验证相关常量
 const PHONE_HASH_KEY = 'perlercraft:phoneHash';
-const PHONE_USAGE_PREFIX = 'perlercraft:phoneUsage:';
 
 const getUsageStorageKey = (tokenHash: string) =>
   `${USAGE_STORAGE_PREFIX}${tokenHash}`;
-
-const getPhoneUsageStorageKey = (hash: string) =>
-  `${PHONE_USAGE_PREFIX}${hash}`;
-
-// 手机号格式校验
-const isValidPhoneNumber = (phone: string): boolean => {
-  return /^1[3-9]\d{9}$/.test(phone);
-};
-
-// SHA-256 哈希函数
-const hashString = async (str: string): Promise<string> => {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(str);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-};
 
 // Helper function for sorting color keys - 保留原有实现，因为未在utils中导出
 function sortColorKeys(a: string, b: string): number {
@@ -245,6 +236,7 @@ export default function Home() {
   const [isPhoneModalOpen, setIsPhoneModalOpen] = useState(false);
   const [phoneNumber, setPhoneNumber] = useState('');
   const [phoneError, setPhoneError] = useState<string | null>(null);
+  const [isPhoneSubmitting, setIsPhoneSubmitting] = useState(false);
   const [phoneAccessControl, setPhoneAccessControl] = useState<{
     phoneHash: string | null;
     usageCount: number;
@@ -257,6 +249,7 @@ export default function Home() {
   // 综合验证状态：授权码或手机号任一有效即可
   const isAnyAuthActive = isTokenActive || isPhoneActive;
   const totalRemainingUses = isTokenActive ? remainingUses : phoneRemainingUses;
+  const totalAvailableUses = isTokenActive ? accessControl.maxUses : phoneAccessControl.maxUses;
 
   // 放大镜切换处理函数
   const handleToggleMagnifier = () => {
@@ -356,63 +349,96 @@ export default function Home() {
     }
   }, []);
 
+  const applyPhoneSnapshot = useCallback((snapshot: PhoneAccessSnapshot) => {
+    setPhoneAccessControl({
+      phoneHash: snapshot.phoneHash,
+      usageCount: snapshot.usageCount,
+      maxUses: snapshot.maxUses,
+    });
+  }, []);
+
   // 激活手机号验证
   const activatePhone = useCallback(async (phone: string): Promise<boolean> => {
-    if (!isValidPhoneNumber(phone)) {
+    const normalizedPhone = normalizePhoneNumber(phone);
+    if (!isValidPhoneNumber(normalizedPhone)) {
       setPhoneError('请输入正确的手机号格式（11位数字，以1开头）');
       return false;
     }
 
+    setIsPhoneSubmitting(true);
     try {
-      const hash = await hashString(phone);
+      const response = await fetch('/api/phone-access/activate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          phone: normalizedPhone,
+        }),
+      });
 
-      let usageCount = 0;
-      if (typeof window !== 'undefined') {
-        const storedUsage = window.localStorage.getItem(getPhoneUsageStorageKey(hash));
-        if (storedUsage) {
-          const parsed = Number(storedUsage);
-          usageCount = Number.isFinite(parsed)
-            ? Math.min(MAX_TOKEN_USES, Math.max(0, parsed))
-            : 0;
-        }
-        window.localStorage.setItem(PHONE_HASH_KEY, hash);
+      const payload = await response.json().catch(() => null) as
+        | { data?: PhoneAccessSnapshot; error?: string }
+        | null;
+
+      if (!response.ok || !payload?.data) {
+        throw new Error(payload?.error ?? '验证失败，请稍后重试');
       }
 
-      setPhoneAccessControl({
-        phoneHash: hash,
-        usageCount,
-        maxUses: MAX_TOKEN_USES,
-      });
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(PHONE_HASH_KEY, payload.data.phoneHash);
+      }
+
+      applyPhoneSnapshot(payload.data);
       setPhoneError(null);
+      setPhoneNumber(normalizedPhone);
       setIsPhoneModalOpen(false);
       return true;
     } catch (error) {
       console.error('手机号验证失败:', error);
-      setPhoneError('验证失败，请重试');
+      setPhoneError(error instanceof Error ? error.message : '验证失败，请重试');
       return false;
+    } finally {
+      setIsPhoneSubmitting(false);
     }
-  }, []);
+  }, [applyPhoneSnapshot]);
 
   // 恢复手机号验证状态
   const restorePhoneAuth = useCallback(async (hash: string): Promise<boolean> => {
-    let usageCount = 0;
-    if (typeof window !== 'undefined') {
-      const storedUsage = window.localStorage.getItem(getPhoneUsageStorageKey(hash));
-      if (storedUsage) {
-        const parsed = Number(storedUsage);
-        usageCount = Number.isFinite(parsed)
-          ? Math.min(MAX_TOKEN_USES, Math.max(0, parsed))
-          : 0;
+    const normalizedHash = hash.trim().toLowerCase();
+    if (!isValidPhoneHash(normalizedHash)) {
+      if (typeof window !== 'undefined') {
+        window.localStorage.removeItem(PHONE_HASH_KEY);
       }
+      return false;
     }
 
-    setPhoneAccessControl({
-      phoneHash: hash,
-      usageCount,
-      maxUses: MAX_TOKEN_USES,
-    });
-    return true;
-  }, []);
+    try {
+      const response = await fetch(
+        `/api/phone-access/status?phoneHash=${encodeURIComponent(normalizedHash)}`,
+        {
+          cache: 'no-store',
+        }
+      );
+
+      const payload = await response.json().catch(() => null) as
+        | { data?: PhoneAccessSnapshot; error?: string }
+        | null;
+
+      if (!response.ok || !payload?.data) {
+        if (typeof window !== 'undefined') {
+          window.localStorage.removeItem(PHONE_HASH_KEY);
+        }
+        return false;
+      }
+
+      applyPhoneSnapshot(payload.data);
+      return true;
+    } catch (error) {
+      console.error('恢复手机号验证失败:', error);
+      return false;
+    }
+  }, [applyPhoneSnapshot]);
 
   // 放大镜像素编辑处理函数
   const handleMagnifierPixelEdit = (row: number, col: number, colorData: { key: string; color: string }) => {
@@ -1268,19 +1294,23 @@ export default function Home() {
 
   // 恢复手机号验证状态
   useEffect(() => {
-    if (!IS_TOKEN_GATING_ENABLED || typeof window === 'undefined') {
+    if (!IS_PHONE_GATING_ENABLED || typeof window === 'undefined') {
       return;
     }
 
     const storedPhoneHash = window.localStorage.getItem(PHONE_HASH_KEY);
     if (storedPhoneHash) {
-      restorePhoneAuth(storedPhoneHash);
+      restorePhoneAuth(storedPhoneHash).then((restored) => {
+        if (!restored && !window.localStorage.getItem(ACTIVE_TOKEN_KEY)) {
+          setIsPhoneModalOpen(true);
+        }
+      });
     }
   }, [restorePhoneAuth]);
 
   // 如果没有任何验证，弹出手机号输入框
   useEffect(() => {
-    if (!IS_TOKEN_GATING_ENABLED || typeof window === 'undefined') {
+    if (!IS_ACCESS_CONTROL_ENABLED || typeof window === 'undefined') {
       return;
     }
 
@@ -1304,7 +1334,7 @@ export default function Home() {
 
   // --- Download function (ensure filename includes palette) ---
   const handleDownloadRequest = async (options?: GridDownloadOptions) => {
-    if (IS_TOKEN_GATING_ENABLED) {
+    if (IS_ACCESS_CONTROL_ENABLED) {
       // 检查是否有任何有效验证
       if (!isAnyAuthActive) {
         setTokenError('请通过授权链接或输入手机号后再下载图纸。');
@@ -1334,7 +1364,7 @@ export default function Home() {
         selectedColorSystem
       });
 
-      if (IS_TOKEN_GATING_ENABLED) {
+      if (IS_ACCESS_CONTROL_ENABLED) {
         // 根据当前激活的验证方式更新使用次数
         if (isTokenActive) {
           setAccessControl((prev) => {
@@ -1353,23 +1383,26 @@ export default function Home() {
               usageCount: newUsage,
             };
           });
-        } else if (isPhoneActive) {
-          setPhoneAccessControl((prev) => {
-            if (!prev.phoneHash) {
-              return prev;
-            }
-            const newUsage = Math.min(prev.maxUses, prev.usageCount + 1);
-            if (typeof window !== 'undefined') {
-              window.localStorage.setItem(
-                getPhoneUsageStorageKey(prev.phoneHash),
-                String(newUsage)
-              );
-            }
-            return {
-              ...prev,
-              usageCount: newUsage,
-            };
+        } else if (isPhoneActive && phoneAccessControl.phoneHash) {
+          const response = await fetch('/api/phone-access/deduct', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              phoneHash: phoneAccessControl.phoneHash,
+            }),
           });
+
+          const payload = await response.json().catch(() => null) as
+            | { data?: PhoneAccessSnapshot; error?: string }
+            | null;
+
+          if (!response.ok || !payload?.data) {
+            throw new Error(payload?.error ?? '扣减手机号次数失败，请稍后重试。');
+          }
+
+          applyPhoneSnapshot(payload.data);
         }
         setTokenError(null);
       }
@@ -2009,7 +2042,7 @@ export default function Home() {
       {SHOW_INSTALL_PROMPT && <InstallPWA />}
 
       {/* 手机号输入弹窗 */}
-      {isPhoneModalOpen && IS_TOKEN_GATING_ENABLED && (
+      {isPhoneModalOpen && IS_PHONE_GATING_ENABLED && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[9999]">
           <div className="bg-white rounded-xl p-6 mx-4 max-w-sm w-full shadow-2xl">
             <h3 className="text-lg font-bold text-gray-800 mb-2">验证身份</h3>
@@ -2040,21 +2073,21 @@ export default function Home() {
               </button>
               <button
                 onClick={() => activatePhone(phoneNumber)}
-                disabled={phoneNumber.length !== 11}
+                disabled={phoneNumber.length !== 11 || isPhoneSubmitting}
                 className="flex-1 px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
               >
-                确认
+                {isPhoneSubmitting ? '验证中...' : '确认'}
               </button>
             </div>
             <p className="text-xs text-gray-400 mt-3 text-center">
-              验证后可下载{MAX_TOKEN_USES}次图纸
+              首次验证后默认可下载{DEFAULT_PHONE_MAX_USES}次图纸
             </p>
           </div>
         </div>
       )}
 
       {/* Apply dark mode styles to the main container */}
-      <div className="min-h-screen p-4 sm:p-6 flex flex-col items-center bg-gradient-to-b from-gray-50 to-white dark:from-gray-800 dark:to-gray-900 font-[family-name:var(--font-geist-sans)] overflow-x-hidden">
+      <div className="min-h-screen p-4 sm:p-6 flex flex-col items-center bg-gradient-to-b from-gray-50 to-white dark:from-gray-800 dark:to-gray-900 font-sans overflow-x-hidden">
         {/* Apply dark mode styles to the header */}
         <header className="w-full md:max-w-4xl text-center mt-6 mb-8 sm:mt-8 sm:mb-10 relative overflow-hidden">
           {/* Adjust decorative background colors for dark mode */}
@@ -2794,7 +2827,7 @@ export default function Home() {
             <p className="font-medium text-gray-600 dark:text-gray-300">
               PerlerCraft Studio &copy; {new Date().getFullYear()}
             </p>
-            {IS_TOKEN_GATING_ENABLED && (
+            {IS_ACCESS_CONTROL_ENABLED && (
               <div className="flex items-center gap-3 text-xs sm:text-sm text-gray-600 dark:text-gray-300">
                 {isAnyAuthActive ? (
                   <>
@@ -2802,7 +2835,7 @@ export default function Home() {
                       {isTokenActive ? maskedToken : '📱 手机号验证'}
                     </span>
                     <span className="text-emerald-600 dark:text-emerald-400 font-semibold">
-                      剩余 {totalRemainingUses} / {MAX_TOKEN_USES} 次
+                      剩余 {totalRemainingUses} / {totalAvailableUses} 次
                     </span>
                     {isTokenActive && (
                       <button

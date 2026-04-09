@@ -1,9 +1,18 @@
-name = "perlercraft"
+name = "perler-beads"
 pages_build_output_dir = ".vercel/output/static"
 compatibility_date = "2024-11-06"
 compatibility_flags = ["nodejs_compat"]
 
-# Define any Pages Functions settings here if needed in future.
+# Cloudflare Pages 需要配置：
+# 1. D1 binding: PHONE_USAGE_DB
+#    - database_name: phone_usage
+#    - database_id: 869c4794-378b-4339-ac00-ec1590e22d33
+# 2. Environment variable: PHONE_USAGE_ADMIN_KEY
+d1_databases = [
+  { binding = "PHONE_USAGE_DB", database_name = "phone_usage", database_id = "869c4794-378b-4339-ac00-ec1590e22d33", preview_database_id = "869c4794-378b-4339-ac00-ec1590e22d33", migrations_dir = "./migrations" }
+]
 
 [env.preview]
-# Placeholder for preview-specific vars.
+d1_databases = [
+  { binding = "PHONE_USAGE_DB", database_name = "phone_usage", database_id = "869c4794-378b-4339-ac00-ec1590e22d33", preview_database_id = "869c4794-378b-4339-ac00-ec1590e22d33", migrations_dir = "./migrations" }
+]
