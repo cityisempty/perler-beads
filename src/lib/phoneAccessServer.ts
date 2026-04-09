@@ -11,22 +11,6 @@ import {
   type PhoneAccessSnapshot,
 } from './phoneAccess';
 
-const PHONE_ACCESS_SCHEMA_SQL = `
-CREATE TABLE IF NOT EXISTS phone_access (
-  phone TEXT PRIMARY KEY,
-  phone_hash TEXT NOT NULL UNIQUE,
-  total_uses INTEGER NOT NULL DEFAULT 10 CHECK (total_uses >= 0),
-  used_uses INTEGER NOT NULL DEFAULT 0 CHECK (used_uses >= 0),
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  last_activated_at TEXT,
-  last_used_at TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_phone_access_hash
-ON phone_access(phone_hash);
-`;
-
 type PhoneAccessRow = {
   phone: string;
   phone_hash: string;
@@ -37,8 +21,6 @@ type PhoneAccessRow = {
   last_activated_at: string | null;
   last_used_at: string | null;
 };
-
-let schemaReady = false;
 
 export class PhoneAccessError extends Error {
   status: number;
@@ -58,15 +40,6 @@ function getPhoneUsageDb(): D1Database {
   }
 
   return env.PHONE_USAGE_DB;
-}
-
-async function ensurePhoneAccessSchema(db: D1Database): Promise<void> {
-  if (schemaReady) {
-    return;
-  }
-
-  await db.exec(PHONE_ACCESS_SCHEMA_SQL);
-  schemaReady = true;
 }
 
 async function sha256Hex(value: string): Promise<string> {
@@ -152,7 +125,6 @@ function normalizeAndValidatePhoneHash(rawHash: string): string {
 export async function activatePhoneAccess(rawPhone: string): Promise<PhoneAccessSnapshot> {
   const phone = normalizeAndValidatePhone(rawPhone);
   const db = getPhoneUsageDb();
-  await ensurePhoneAccessSchema(db);
 
   const now = new Date().toISOString();
   const phoneHash = await sha256Hex(phone);
@@ -188,7 +160,6 @@ export async function activatePhoneAccess(rawPhone: string): Promise<PhoneAccess
 export async function getPhoneAccessByPhone(rawPhone: string): Promise<PhoneAccessSnapshot> {
   const phone = normalizeAndValidatePhone(rawPhone);
   const db = getPhoneUsageDb();
-  await ensurePhoneAccessSchema(db);
 
   const row = await getPhoneAccessByPhoneValue(db, phone);
   if (!row) {
@@ -201,7 +172,6 @@ export async function getPhoneAccessByPhone(rawPhone: string): Promise<PhoneAcce
 export async function getPhoneAccessByHash(rawHash: string): Promise<PhoneAccessSnapshot> {
   const phoneHash = normalizeAndValidatePhoneHash(rawHash);
   const db = getPhoneUsageDb();
-  await ensurePhoneAccessSchema(db);
 
   const row = await getPhoneAccessByHashValue(db, phoneHash);
   if (!row) {
@@ -214,7 +184,6 @@ export async function getPhoneAccessByHash(rawHash: string): Promise<PhoneAccess
 export async function deductPhoneAccessByHash(rawHash: string): Promise<PhoneAccessSnapshot> {
   const phoneHash = normalizeAndValidatePhoneHash(rawHash);
   const db = getPhoneUsageDb();
-  await ensurePhoneAccessSchema(db);
 
   const now = new Date().toISOString();
   const result = await db
@@ -263,7 +232,6 @@ export async function upsertPhoneRemainingUses(
   }
 
   const db = getPhoneUsageDb();
-  await ensurePhoneAccessSchema(db);
 
   const now = new Date().toISOString();
   const phoneHash = await sha256Hex(phone);

@@ -19,6 +19,9 @@ export async function POST(request: Request): Promise<Response> {
     }
 
     console.error('手机号激活接口失败:', error);
-    return Response.json({ error: '手机号验证失败，请稍后重试。' }, { status: 500 });
+    return Response.json(
+      { error: error instanceof Error ? error.message : '手机号验证失败，请稍后重试。' },
+      { status: 500 }
+    );
   }
 }

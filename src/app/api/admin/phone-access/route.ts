@@ -42,7 +42,10 @@ export async function GET(request: Request): Promise<Response> {
     }
 
     console.error('管理员查询手机号失败:', error);
-    return Response.json({ error: '查询手机号次数失败，请稍后重试。' }, { status: 500 });
+    return Response.json(
+      { error: error instanceof Error ? error.message : '查询手机号次数失败，请稍后重试。' },
+      { status: 500 }
+    );
   }
 }
 
@@ -65,6 +68,9 @@ export async function PATCH(request: Request): Promise<Response> {
     }
 
     console.error('管理员更新手机号次数失败:', error);
-    return Response.json({ error: '更新手机号次数失败，请稍后重试。' }, { status: 500 });
+    return Response.json(
+      { error: error instanceof Error ? error.message : '更新手机号次数失败，请稍后重试。' },
+      { status: 500 }
+    );
   }
 }
