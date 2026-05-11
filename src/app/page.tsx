@@ -125,14 +125,14 @@ export default function Home() {
   const [originalImageSrc, setOriginalImageSrc] = useState<string | null>(null);
   const [granularity, setGranularity] = useState<number>(BOARD_PEGS);
   const [granularityInput, setGranularityInput] = useState<string>(String(BOARD_PEGS));
-  const [similarityThreshold, setSimilarityThreshold] = useState<number>(30);
-  const [similarityThresholdInput, setSimilarityThresholdInput] = useState<string>("30");
+  const [similarityThreshold, setSimilarityThreshold] = useState<number>(10);
+  const [similarityThresholdInput, setSimilarityThresholdInput] = useState<string>("10");
   // 成品尺寸输入状态（cm）— 与格数双向联动
   const [desiredWidthCm, setDesiredWidthCm] = useState<string>((BOARD_PEGS * BEAD_SIZE_MM / 10).toFixed(1));
   // 处理中状态指示
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   // 添加像素化模式状态
-  const [pixelationMode, setPixelationMode] = useState<PixelationMode>(PixelationMode.Dominant); // 默认为卡通模式
+  const [pixelationMode, setPixelationMode] = useState<PixelationMode>(PixelationMode.Average); // 默认为写实模式
 
   // 新增：色号系统选择状态
   const [selectedColorSystem, setSelectedColorSystem] = useState<ColorSystem>('MARD');
@@ -1125,6 +1125,87 @@ export default function Home() {
         console.log("No colors were similar enough to merge.");
       }
       // --- 结束新的全局颜色合并逻辑 ---
+
+      // --- 自动移除白色/透明背景 ---
+      console.log("Starting automatic background removal...");
+
+      // 定义白色/浅色阈值（RGB 值都大于 240 视为白色/浅色背景）
+      const isLightColor = (hexColor: string): boolean => {
+        const rgb = hexToRgb(hexColor);
+        if (!rgb) return false;
+        // 白色或非常浅的颜色
+        return rgb.r > 240 && rgb.g > 240 && rgb.b > 240;
+      };
+
+      // 使用洪水填充算法从边界开始标记背景
+      const visited = Array(M).fill(null).map(() => Array(N).fill(false));
+      const queue: [number, number][] = [];
+
+      // 从四条边界开始，将所有浅色单元格加入队列
+      for (let i = 0; i < N; i++) {
+        // 顶边
+        if (mergedData[0][i] && isLightColor(mergedData[0][i].color)) {
+          queue.push([0, i]);
+          visited[0][i] = true;
+        }
+        // 底边
+        if (mergedData[M - 1][i] && isLightColor(mergedData[M - 1][i].color)) {
+          queue.push([M - 1, i]);
+          visited[M - 1][i] = true;
+        }
+      }
+      for (let j = 0; j < M; j++) {
+        // 左边
+        if (mergedData[j][0] && isLightColor(mergedData[j][0].color)) {
+          queue.push([j, 0]);
+          visited[j][0] = true;
+        }
+        // 右边
+        if (mergedData[j][N - 1] && isLightColor(mergedData[j][N - 1].color)) {
+          queue.push([j, N - 1]);
+          visited[j][N - 1] = true;
+        }
+      }
+
+      // BFS 洪水填充，标记所有连通的浅色区域为背景
+      let backgroundCellsCount = 0;
+      while (queue.length > 0) {
+        const [row, col] = queue.shift()!;
+        const currentColor = mergedData[row][col].color;
+
+        // 标记为外部背景
+        mergedData[row][col] = {
+          ...mergedData[row][col],
+          isExternal: true
+        };
+        backgroundCellsCount++;
+
+        // 检查四个方向的邻居
+        const directions = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+        for (const [dr, dc] of directions) {
+          const newRow = row + dr;
+          const newCol = col + dc;
+
+          // 检查边界
+          if (newRow >= 0 && newRow < M && newCol >= 0 && newCol < N && !visited[newRow][newCol]) {
+            const neighborCell = mergedData[newRow][newCol];
+
+            // 如果邻居也是浅色，或者与当前颜色非常接近（颜色距离小于 30），则继续扩展
+            if (neighborCell && (isLightColor(neighborCell.color) ||
+                colorDistance(hexToRgb(currentColor)!, hexToRgb(neighborCell.color)!) < 30)) {
+              queue.push([newRow, newCol]);
+              visited[newRow][newCol] = true;
+            }
+          }
+        }
+      }
+
+      if (backgroundCellsCount > 0) {
+        console.log(`Automatically removed ${backgroundCellsCount} background cells (white/light colored areas from edges).`);
+      } else {
+        console.log("No light-colored background detected from edges.");
+      }
+      // --- 结束自动背景移除 ---
 
       // --- 绘制和状态更新 ---
       if (pixelatedCanvasRef.current) {
